@@ -7,16 +7,32 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gochi+Hand&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css">
+  <script>
+    // Versión del juego. Al publicar cambios, súbela (por ejemplo 2026.11.12-2):
+    // así los navegadores descargan los ficheros nuevos en vez de usar los guardados.
+    window.GAME_VERSION = '2026.11.12-1';
+
+    (function load() {
+      const v = '?v=' + encodeURIComponent(window.GAME_VERSION);
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'css/style.css' + v;
+      document.head.appendChild(css);
+
+      // los scripts se ejecutan en este orden (async = false)
+      const files = ['audio', 'input', 'draw', 'levels', 'screens', 'game'];
+      document.addEventListener('DOMContentLoaded', () => {
+        for (const f of files) {
+          const s = document.createElement('script');
+          s.src = 'js/' + f + '.js' + v;
+          s.async = false;
+          document.body.appendChild(s);
+        }
+      });
+    })();
+  </script>
 </head>
 <body>
   <canvas id="game" aria-label="Juego de plataformas: ¡Esa princesa es MÍA!"></canvas>
-
-  <script src="js/audio.js"></script>
-  <script src="js/input.js"></script>
-  <script src="js/draw.js"></script>
-  <script src="js/levels.js"></script>
-  <script src="js/screens.js"></script>
-  <script src="js/game.js"></script>
 </body>
 </html>
