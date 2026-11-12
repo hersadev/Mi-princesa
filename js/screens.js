@@ -79,7 +79,7 @@ function drawTitle(t) {
   } else if (sv && typeof sv.best === 'number') {
     Draw.text(ctx, `Récord: juego completado con ${sv.best} muertes`, VW / 2, 486, 22, COL.rival);
   }
-  Draw.text(ctx, '← → moverse · ESPACIO saltar · R reiniciar · ESC pausa · M sonido', VW / 2, 522, 17, '#6b5f55');
+  Draw.text(ctx, '← → moverse · ESPACIO saltar · R reiniciar · ESC pausa · M sonido · H ayuda · T temblor', VW / 2, 522, 17, '#6b5f55');
 }
 
 // ===== Historia =====

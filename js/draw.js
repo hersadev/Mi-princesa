@@ -27,7 +27,9 @@ const COL = {
 
 // ===== Utilidades de dibujo "a mano" =====
 const Draw = {
-  boil: 0, // cambia unas veces por segundo para que las líneas "tiemblen"
+  boil: 0,   // cambia unas veces por segundo para que las líneas "tiemblen"
+  motion: 1, // 1 = temblor normal, 0.35 = suave, 0 = sin temblor (lo fija el juego)
+  amp: 1,    // cuánto se desvía el trazo "a mano"
 
   hash(a, b, s) {
     let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263) ^ Math.imul(s | 0, 1274126177);
@@ -36,7 +38,7 @@ const Draw = {
     return (h >>> 0) / 4294967296;
   },
 
-  jit(x, y, amt) { return (this.hash(Math.round(x), Math.round(y), this.boil) - 0.5) * 2 * amt; },
+  jit(x, y, amt) { return (this.hash(Math.round(x), Math.round(y), this.boil) - 0.5) * 2 * amt * this.amp; },
 
   // Añade al path actual un segmento con temblor. Las esquinas compartidas tiemblan igual.
   seg(ctx, x1, y1, x2, y2, amt = 1.2) {
@@ -85,8 +87,8 @@ const Draw = {
     for (let i = 0; i < str.length; i++) {
       const ch = str[i], w = ctx.measureText(ch).width;
       ctx.save();
-      ctx.translate(cx + w / 2, y + Math.sin(t * 3 + i * 0.7) * size * 0.04);
-      ctx.rotate((this.hash(i, 3, this.boil) - 0.5) * 0.12);
+      ctx.translate(cx + w / 2, y + Math.sin(t * 3 + i * 0.7) * size * 0.04 * this.motion);
+      ctx.rotate((this.hash(i, 3, this.boil) - 0.5) * 0.12 * Math.max(this.motion, 0.4));
       ctx.fillText(ch, -w / 2, 0);
       ctx.restore();
       cx += w;
@@ -276,6 +278,12 @@ const Draw = {
       ctx.moveTo(f * 1, hy + 3);
       ctx.quadraticCurveTo(-f * 1.5, hy + 6, -f * 3.5, hy + 2);
       ctx.stroke();
+    }
+    // sudor en la frente (ayuda): una gota, y dos si está muy cerca del peligro
+    if (o.sweat > 0.3) {
+      this.drop(ctx, -f * 8.5, hy - 1, 1.1 + o.sweat * 0.8);
+      if (o.sweat > 0.7) this.drop(ctx, -f * 6, hy + 6, 1.2);
+      ctx.strokeStyle = INK;
     }
     if (o.hat) {
       ctx.fillStyle = INK;
@@ -501,6 +509,25 @@ const Draw = {
     ctx.restore();
   },
 
+  // Gota de sudor con la punta hacia arriba (g = -1: al revés, para la gravedad invertida)
+  drop(ctx, x, y, r, g = 1) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (g < 0) ctx.scale(1, -1);
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 2.3);
+    ctx.quadraticCurveTo(r * 1.1, -r * 0.6, r, 0);
+    ctx.arc(0, 0, r, 0, Math.PI);
+    ctx.quadraticCurveTo(-r * 1.1, -r * 0.6, 0, -r * 2.3);
+    ctx.closePath();
+    ctx.fillStyle = '#7fc4ef';
+    ctx.fill();
+    ctx.strokeStyle = '#2e86c1';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.restore();
+  },
+
   ceilSpikes(ctx, x, y) {
     ctx.beginPath();
     for (let i = 0; i < 3; i++) {
@@ -519,7 +546,7 @@ const Draw = {
 
   // Prensa: barra desde el techo + bloque con pinchos abajo
   crusher(ctx, x, y0, y, shiver) {
-    const sx = x + (shiver ? Math.sin(Date.now() / 18) * 1.5 : 0);
+    const sx = x + (shiver ? Math.sin(Date.now() / 18) * 1.5 * this.motion : 0);
     ctx.strokeStyle = INK;
     ctx.lineWidth = 2;
     ctx.fillStyle = '#b8b8b8';
@@ -557,7 +584,10 @@ const Draw = {
       ctx.setLineDash([]);
       return;
     }
-    if (state === 'warn' && Math.floor(Date.now() / 90) % 2) return;
+    // aviso de que va a desaparecer: parpadeo rápido, o semitransparente si el temblor está reducido
+    if (state === 'warn' && this.motion === 1 && Math.floor(Date.now() / 90) % 2) return;
+    ctx.save();
+    if (state === 'warn' && this.motion < 1) ctx.globalAlpha = 0.45;
     ctx.fillStyle = col;
     ctx.fillRect(x, y, T, T);
     ctx.beginPath();
@@ -569,6 +599,7 @@ const Draw = {
     ctx.arc(x + T / 2, y + T / 2, 5, 0, Math.PI * 2);
     ctx.lineWidth = 1.5;
     ctx.stroke();
+    ctx.restore();
   },
 
   shooter(ctx, x, y, dir) {

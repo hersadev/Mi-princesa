@@ -62,7 +62,149 @@ const G = {
   deathMsg: '',
   save: null,
   newRecord: false,
+  help: false,          // ayuda activada: el monigote suda cerca de donde ya murió
+  deathSpots: {},       // { nivel: [{ x, y }] } sitios donde has muerto
+  motion: 0,            // índice en MOTION: 0 normal, 1 suave, 2 sin temblor
+  mockT: 20,            // segundos hasta la próxima burla del Conde por usar ayudas
+  lastMock: '',
 };
+
+// ===== Ayuda (sudor) =====
+const HELP_KEY = 'esa-princesa-es-mia:ayuda';
+const HELP_BTN = { x: VW - 262, y: 9, w: 128, h: 28 };
+const SWEAT_RANGE = 200; // px por delante a los que empieza a sudar
+
+// ===== Temblor (para quien se marea) =====
+// k escala todo lo que tiembla o se sacude; boilMs = cada cuánto se redibujan las líneas "a mano"
+const MOTION = [
+  { label: 'normal', k: 1, boilMs: 140, amp: 1 },
+  { label: 'suave', k: 0.35, boilMs: 500, amp: 0.6 },
+  { label: 'no', k: 0, boilMs: 0, amp: 0.6 },
+];
+const MOTION_BTN = { x: HELP_BTN.x - 158, y: 9, w: 150, h: 28 };
+const motionK = () => MOTION[G.motion].k;
+
+function prefersReducedMotion() {
+  try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
+}
+
+function applyMotion() {
+  const m = MOTION[G.motion];
+  Draw.motion = m.k;
+  Draw.amp = m.amp;
+}
+
+function cycleMotion() {
+  G.motion = (G.motion + 1) % MOTION.length;
+  applyMotion();
+  saveHelp();
+  Sfx.blip();
+  if (G.player && G.state === 'play') addText(G.player.x + 8, G.player.y - 20, `Temblor: ${MOTION[G.motion].label}`, 18);
+  if (G.motion !== 0) mockSoon();
+}
+
+// ===== El Conde se burla si usas ayudas =====
+const MOCK_LINES = {
+  help: [
+    '¿Sudando? Eso es que te chivas a ti mismo. ¡Tramposo!',
+    'Con ayudita así cualquiera. ¡Ja!',
+    'Un malvado de verdad no necesita sudar para saber dónde hay pinchos.',
+    'Ayuda activada... qué vergüenza para el gremio de malvados.',
+  ],
+  motion: [
+    '¿Temblor rebajado? ¿Eres un malvado o un flan?',
+    '¿Te mareas? Pues mis trampas no tienen modo suave.',
+    'Un malvado delicadito... lo que me faltaba por ver.',
+    'Seguro que también duermes con la lucecita encendida.',
+  ],
+  any: [
+    'Tramposo, tramposo, ¡TRAMPOSO!',
+    'Así no tiene mérito. Lo apunto en mi libreta de vergüenzas.',
+    'Cuando la princesa se entere de que juegas con trampas...',
+    'Sin trampas no eres capaz, ¿eh? Ji, ji, ji.',
+  ],
+};
+const MOCK_EVERY = [45, 75]; // segundos de juego entre burla y burla (al azar dentro del rango)
+
+const assistsOn = () => G.help || G.motion !== 0;
+const nextMockDelay = () => MOCK_EVERY[0] + Math.random() * (MOCK_EVERY[1] - MOCK_EVERY[0]);
+
+// Al activar una ayuda en plena partida, el Conde se burla casi en el acto
+function mockSoon() {
+  if (G.state === 'play') G.mockT = Math.min(G.mockT, 1.2);
+}
+
+function mock() {
+  const pool = [
+    ...(G.help ? MOCK_LINES.help : []),
+    ...(G.motion !== 0 ? MOCK_LINES.motion : []),
+    ...MOCK_LINES.any,
+  ].filter((l) => l !== G.lastMock);
+  G.lastMock = pick(pool);
+  say(G.lastMock);
+}
+
+function updateMock(dt) {
+  if (!assistsOn()) return;
+  G.mockT -= dt;
+  if (G.mockT <= 0 && !G.voice) { // nunca pisa lo que ya esté diciendo alguien
+    mock();
+    G.mockT = nextMockDelay();
+  }
+}
+
+// Ajustes guardados en el navegador: ayuda, sitios de muerte y temblor
+function loadHelp() {
+  G.motion = prefersReducedMotion() ? 1 : 0; // si el sistema pide menos movimiento, empieza en "suave"
+  try {
+    const s = JSON.parse(localStorage.getItem(HELP_KEY));
+    if (s) {
+      G.help = !!s.on;
+      G.deathSpots = s.spots || {};
+      if (typeof s.motion === 'number' && MOTION[s.motion]) G.motion = s.motion;
+    }
+  } catch (e) { /* sin almacenamiento: no pasa nada */ }
+  applyMotion();
+}
+
+function saveHelp() {
+  try {
+    localStorage.setItem(HELP_KEY, JSON.stringify({ on: G.help, spots: G.deathSpots, motion: G.motion }));
+  } catch (e) { /* ignorar */ }
+}
+
+function toggleHelp() {
+  G.help = !G.help;
+  saveHelp();
+  Sfx.blip();
+  if (G.player && G.state === 'play') addText(G.player.x + 8, G.player.y - 20, G.help ? 'Ayuda: sí' : 'Ayuda: no', 18);
+  if (G.help) mockSoon();
+}
+
+// Apunta dónde has muerto (si caes al vacío, el último sitio pisado)
+function rememberDeath(p, cause) {
+  if (cause === 'reset' || cause === 'chase') return; // ni rendirse ni el muro marcan un sitio peligroso
+  const fell = cause === 'fall' || cause === 'up';
+  const x = fell && p.lastGround ? p.lastGround.x : p.x + p.w / 2;
+  const y = fell && p.lastGround ? p.lastGround.y : p.y + p.h / 2;
+  const list = (G.deathSpots[G.levelIndex] = G.deathSpots[G.levelIndex] || []);
+  if (!list.some((s) => Math.abs(s.x - x) < 24 && Math.abs(s.y - y) < 40)) list.push({ x: Math.round(x), y: Math.round(y) });
+  saveHelp();
+}
+
+// 0..1: cuánto suda según lo cerca que tenga por delante un sitio donde murió
+function sweatTarget(p) {
+  const spots = G.help && G.deathSpots[G.levelIndex];
+  if (!spots) return 0;
+  const pcx = p.x + p.w / 2, pcy = p.y + p.h / 2;
+  let best = 0;
+  for (const s of spots) {
+    const dx = s.x - pcx;
+    if (dx * p.facing < -25 || Math.abs(s.y - pcy) > 110) continue; // detrás o a otra altura
+    best = Math.max(best, 1 - Math.abs(dx) / SWEAT_RANGE);
+  }
+  return best;
+}
 
 // ===== Guardado =====
 function loadSave() {
@@ -192,6 +334,7 @@ function makePlayer(L) {
   return {
     x: L.start.x, y: L.start.y, w: 16, h: 40, vx: 0, vy: 0, gdir: 1, gravLock: false,
     onGround: false, ground: null, facing: 1, coyote: 0, jumpBuf: 0, phase: 0, springing: false,
+    sweat: 0, sweatAcc: 0, lastGround: null,
   };
 }
 
@@ -232,6 +375,8 @@ function newGame() {
   G.totalTime = 0;
   G.levelIndex = 0;
   G.storyPage = 0;
+  G.deathSpots = {};    // partida nueva: el monigote olvida dónde murió
+  saveHelp();
   setState('story');
 }
 
@@ -247,6 +392,7 @@ function goToLevel(i) {
 function startLevel() {
   resetLevel();
   G.paused = false;
+  G.mockT = 15 + Math.random() * 15; // primera burla del nivel, sin agobiar al empezar
   setState('play');
 }
 
@@ -271,6 +417,7 @@ function die(cause) {
   G.shake = 12;
   G.flash = 1;
   G.deathMsg = Math.random() < 0.65 ? pick(DEATH_MSGS[cause] || DEATH_MSGS.any) : pick(DEATH_MSGS.any);
+  rememberDeath(G.player, cause);
   spawnLimbs(G.player);
   Sfx.death();
   writeSave();
@@ -322,6 +469,8 @@ function handleInput() {
     const on = Sfx.toggle();
     if (G.player && G.state === 'play') addText(G.player.x + 8, G.player.y - 20, on ? 'Sonido: sí' : 'Sonido: no', 18);
   }
+  if (pr('KeyH')) toggleHelp();
+  if (pr('KeyT')) cycleMotion();
 
   switch (G.state) {
     case 'title':
@@ -393,6 +542,7 @@ function step(dt) {
       G.levelTime += dt;
       G.totalTime += dt;
       updateCamera(dt);
+      updateMock(dt);
     }
   } else if (G.state === 'dead' || G.state === 'clear') {
     updateWorld(dt);
@@ -649,6 +799,23 @@ function updatePlayer(dt) {
 
   p.phase += Math.abs(p.vx) * dt * 0.055;
 
+  // ===== Sudor (ayuda) =====
+  if (p.onGround) p.lastGround = { x: p.x + p.w / 2, y: p.y + p.h / 2 };
+  p.sweat += (sweatTarget(p) - p.sweat) * Math.min(1, dt * 8);
+  if (p.sweat > 0.12) {
+    p.sweatAcc += dt * (1.5 + 7 * p.sweat); // más cerca, más gotas
+    while (p.sweatAcc >= 1) {
+      p.sweatAcc -= 1;
+      const headY = p.gdir > 0 ? p.y - 3 : p.y + p.h + 3; // borde de la cabeza
+      G.particles.push({
+        type: 'sweat', g: p.gdir,
+        x: p.x + p.w / 2 - p.facing * (6 + Math.random() * 4), y: headY, // salen por la nuca
+        vx: (Math.random() - 0.5) * 70 - p.facing * 25, vy: -p.gdir * (60 + Math.random() * 70),
+        t: 0, life: 0.6,
+      });
+    }
+  } else p.sweatAcc = 0;
+
   // ===== Peligros =====
   const pb = { x: p.x + 2, y: p.y + 3, w: p.w - 4, h: p.h - 4 }; // caja un poco indulgente
   const pcx = p.x + p.w / 2;
@@ -790,6 +957,8 @@ function updateParticles(dt) {
       q.vy += 500 * dt;
       q.vx *= 1 - dt;
       q.a += q.va * dt;
+    } else if (q.type === 'sweat') {
+      q.vy += 900 * q.g * dt;
     }
     q.x += q.vx * dt;
     q.y += q.vy * dt;
@@ -813,13 +982,16 @@ function render() {
       drawGame();
       if (G.state === 'clear') drawClearOverlay(t);
   }
+  drawHelpButton();
+  drawMotionButton();
 }
 
 function drawGame() {
   const L = G.L, cam = G.cam;
   paperBackground(40 - cam);
 
-  const sx = (Math.random() - 0.5) * G.shake, sy = (Math.random() - 0.5) * G.shake;
+  const sh = G.shake * motionK();
+  const sx = (Math.random() - 0.5) * sh, sy = (Math.random() - 0.5) * sh;
   ctx.save();
   ctx.translate(-Math.round(cam) + sx, sy);
 
@@ -866,7 +1038,7 @@ function drawGame() {
   if (G.state === 'play' && !p.hidden) {
     const o = {
       facing: p.facing, phase: p.phase, speed: Math.abs(p.vx) / PHYS.run,
-      air: !p.onGround, vy: p.vy * p.gdir, t: G.t,
+      air: !p.onGround, vy: p.vy * p.gdir, t: G.t, sweat: p.sweat,
     };
     if (p.gdir < 0) {
       ctx.save();
@@ -907,7 +1079,7 @@ function drawGame() {
   drawVoice();
 
   if (G.flash > 0) {
-    ctx.fillStyle = `rgba(255,255,255,${G.flash * 0.6})`;
+    ctx.fillStyle = `rgba(255,255,255,${G.flash * 0.6 * motionK()})`;
     ctx.fillRect(0, 0, VW, VH);
   }
   if (G.state === 'dead' && G.stateT > 0.12) {
@@ -927,6 +1099,8 @@ function drawGame() {
     Draw.text(ctx, 'ESC — seguir jugando', VW / 2, 290, 26);
     Draw.text(ctx, 'R — reiniciar nivel (cuenta como muerte)', VW / 2, 326, 22, '#6b5f55');
     Draw.text(ctx, 'Q — volver al título', VW / 2, 358, 22, '#6b5f55');
+    Draw.text(ctx, 'H — ayuda: sudas al acercarte a donde ya moriste', VW / 2, 390, 22, '#6b5f55');
+    Draw.text(ctx, 'T — temblor: normal, suave o ninguno', VW / 2, 422, 22, '#6b5f55');
   }
 }
 
@@ -1037,13 +1211,24 @@ function drawTiles(L, cam) {
   ctx.stroke();
 }
 
+// Vibración leve de los bloques que se caen antes de pisarlos: cada ~2 s tiemblan
+// un momento, y la onda recorre el puente de un extremo a otro.
+function idleTremble(e) {
+  if (e.falling) return 0;
+  const u = (G.t * 0.5 + e.x * 0.002) % 1;
+  if (u > 0.22) return 0;
+  const env = Math.sin((u / 0.22) * Math.PI); // entra y sale suave
+  return Math.sin(G.t * 75 + e.x) * 0.9 * env * motionK();
+}
+
 function drawEntities(L) {
   for (const e of L.ents) {
     if (e.x + (e.w || T) < G.cam - 40 || e.x > G.cam + VW + 40) continue;
     if (e.type === 'crumble') {
       if (e.y > VH + 40) continue;
-      const shake = e.timer > 0 ? Math.sin(G.t * 90) * 2 : 0;
-      const x = e.x + shake, y = e.y;
+      // al pisarlo tiembla fuerte; con el temblor reducido queda un aviso mínimo
+      const shake = e.timer > 0 ? Math.sin(G.t * 90) * 2 * Math.max(motionK(), 0.25) : idleTremble(e);
+      const x = e.x + shake, y = e.y + (e.falling ? 0 : Math.abs(shake) * 0.3);
       ctx.fillStyle = COL.block;
       ctx.fillRect(x, y, T, T);
       ctx.beginPath();
@@ -1141,8 +1326,58 @@ function drawParticles() {
       ctx.fillStyle = q.color;
       ctx.fillRect(-4, -2, 8, 4);
       ctx.restore();
+    } else if (q.type === 'sweat') {
+      ctx.globalAlpha = Math.max(0, 1 - q.t / q.life);
+      Draw.drop(ctx, q.x, q.y, 2, q.g);
+      ctx.globalAlpha = 1;
     }
   }
+}
+
+// Botón de ayuda, visible en todas las pantallas (clic, toque o tecla H)
+function drawHelpButton() {
+  const b = HELP_BTN, on = G.help;
+  ctx.save();
+  ctx.beginPath();
+  Draw.roundRect(ctx, b.x, b.y, b.w, b.h, 8);
+  ctx.fillStyle = on ? '#d6ecfa' : 'rgba(255,255,255,0.85)';
+  ctx.fill();
+  ctx.strokeStyle = on ? '#2e86c1' : 'rgba(43,38,34,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.globalAlpha = on ? 1 : 0.55;
+  Draw.drop(ctx, b.x + 17, b.y + b.h / 2 + 2, 6, 1);
+  ctx.globalAlpha = 1;
+  Draw.text(ctx, on ? 'Ayuda: sí' : 'Ayuda: no', b.x + 30, b.y + 20, 18, on ? '#1b4f72' : '#6b5f55', 'left');
+  ctx.restore();
+}
+
+// Botón de temblor, al lado del de ayuda (clic, toque o tecla T)
+function drawMotionButton() {
+  const b = MOTION_BTN, m = MOTION[G.motion];
+  ctx.save();
+  // el ancho se ajusta a la etiqueta más larga (y así no salta al cambiar de modo)
+  ctx.font = Draw.font(18);
+  b.w = Math.ceil(Math.max(...MOTION.map((o) => ctx.measureText(`Temblor: ${o.label}`).width))) + 44;
+  b.x = HELP_BTN.x - 8 - b.w;
+  ctx.beginPath();
+  Draw.roundRect(ctx, b.x, b.y, b.w, b.h, 8);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(43,38,34,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // icono: línea ondulada que se aplana según el nivel de temblor
+  ctx.beginPath();
+  for (let i = 0; i <= 16; i++) {
+    const px = b.x + 9 + i, py = b.y + b.h / 2 + Math.sin(i * 0.9) * 4.5 * Math.max(m.k, 0.08);
+    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  }
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  Draw.text(ctx, `Temblor: ${m.label}`, b.x + 32, b.y + 20, 18, '#6b5f55', 'left');
+  ctx.restore();
 }
 
 function drawHUD() {
@@ -1174,7 +1409,8 @@ let last = performance.now(), acc = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  Draw.boil = Math.floor(now / 140) % 4;
+  const m = MOTION[G.motion];
+  Draw.boil = m.boilMs ? Math.floor(now / m.boilMs) % 4 : 0; // sin temblor: las líneas se quedan quietas
   handleInput();
   acc += dt;
   while (acc >= STEP) { step(STEP); acc -= STEP; }
@@ -1184,7 +1420,27 @@ function frame(now) {
 }
 
 G.save = loadSave();
+loadHelp();
 Input.init();
+
+// clic o toque sobre el botón de ayuda
+const toGame = (e) => {
+  const r = canvas.getBoundingClientRect();
+  return { x: ((e.clientX - r.left) / r.width) * VW, y: ((e.clientY - r.top) / r.height) * VH };
+};
+const inBtn = (b, { x, y }) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+const onHelpBtn = (pt) => inBtn(HELP_BTN, pt);
+const onMotionBtn = (pt) => inBtn(MOTION_BTN, pt);
+canvas.addEventListener('pointerdown', (e) => {
+  Sfx.unlock();
+  const pt = toGame(e);
+  if (onHelpBtn(pt)) { e.preventDefault(); toggleHelp(); }
+  else if (onMotionBtn(pt)) { e.preventDefault(); cycleMotion(); }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const pt = toGame(e);
+  canvas.style.cursor = onHelpBtn(pt) || onMotionBtn(pt) ? 'pointer' : 'default';
+});
 addEventListener('resize', resize);
 addEventListener('blur', () => { if (G.state === 'play') G.paused = true; });
 resize();
